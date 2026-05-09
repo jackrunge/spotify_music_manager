@@ -28,7 +28,7 @@ Both sources feed into a unified `plays` table after transformation and deduplic
 ## Features
 
 ### Listening History Ingestion
-- Loaded 80,000+ rows of extended streaming history exported from Spotify
+- Loaded all of extended streaming history exported from Spotify
 - Ongoing ingestion of recently played tracks via Spotify API on hourly schedule
 - Deduplication and reconciliation logic between historical and live data sources
 
@@ -53,10 +53,29 @@ Both sources feed into a unified `plays` table after transformation and deduplic
 - Monthly automated reports: most-skipped tracks (removal candidates) and most-played tracks *(planned)*
 - Extended history enables deeper analysis: device, shuffle state, skip reason, offline/remote plays
 
-### Tag-Based Playlist Management *(in progress)*
-- Dedicated Spotify playlists serve as tag sources (e.g., "chill", "upbeat", "energetic", "rap", "banger", "indie")
-- API integration pulls all songs from each playlist and writes tag associations to a relational table
-- Automation queries any combination of tags to dynamically build and sync Spotify playlists
+### Tag-Based Playlist Management
+- Dedicated `#hashtag` Spotify playlists serve as tag sources (e.g., `#chill`, `#banger`, `#rap`, `#japanese`)
+- Tags are organized along 8 conceptual **axes** (Energy, Mood, Genre, Context, Production, Language, Period, General) so a track can carry one tag from each independent dimension
+- `tag_manager.py` walks all `#hashtag` playlists via the Spotify Web API, matches each against the `tags` table, and rebuilds `tag_mapping` from scratch — so adding/removing a track from a playlist flows naturally to the DB
+- Supports negative tag queries (e.g., `NOT japanese AND NOT spanish` for English-only playlists) when generating downstream playlists
+- Automated playlist generation from arbitrary tag combinations *(planned)*
+
+### Tag Axes
+
+Tags are grouped along 8 axes so that filtering on one dimension doesn't conflict with another:
+
+| Axis | Purpose |
+|---|---|
+| **Energy** | Physical activation / pace of the music itself, independent of emotional tone |
+| **Mood** | Emotional tone the song evokes, independent of energy level |
+| **Genre** | Stylistic classification |
+| **Context** | Listening scenario / use case |
+| **Production** | Sonic and textural qualities |
+| **Language** | Primary lyrical language; English is the default and is left untagged |
+| **Period** | Era / life-stage association |
+| **General** | Catch-all for subjective and structural tags that don't belong on a single axis |
+
+A track might be tagged `chill` (Energy) + `vibing` (Mood) + `indiepop` (Genre) + `lofi` (Production), with each tag living on its own axis.
 
 ---
 
@@ -124,7 +143,27 @@ track_stats                          # per-track aggregate rollups
 └── peak_listen_month, peak_month_play_count
 ```
 
-**Planned tables** (tag-based playlist management):
+**Tag tables** (populated by `tag_manager.py` and one-off seed SQL):
+
+```
+axes                                 # the 8 conceptual dimensions tags are grouped under
+├── axis_id              (PK)
+├── axis                 (Energy | Mood | Genre | Context | Production | Language | Period | General)
+└── description
+
+tags                                 # individual tags, each living on exactly one axis
+├── tag_id               (PK)
+├── tag                  (UNIQUE — lowercase, no '#' prefix)
+├── description
+└── axis_id              (FK → axes)
+
+tag_mapping                          # which tracks have which tags
+├── tag_id               (FK → tags)
+├── spotify_track_uri
+└── PK (tag_id, spotify_track_uri)   # composite PK prevents duplicate mappings
+```
+
+**Planned tables** (downstream playlist generation):
 
 ```
 playlists
@@ -136,15 +175,6 @@ playlists
 playlist_mapping
 ├── playlist_id          (FK → playlists)
 └── spotify_track_uri    (FK → track_data)
-
-tags
-├── tag_id               (PK)
-├── tag_name
-└── description
-
-tag_mapping
-├── spotify_track_uri    (FK → track_data)
-└── tag_id               (FK → tags)
 ```
 
 ---
@@ -169,7 +199,7 @@ spotify-music-manager/
 │   ├── get_track_info.py          # Fetches track metadata from Spotify API → track_data
 │   ├── classify_plays.py          # Unifies raw tables into plays with quality classification
 │   ├── build_track_stats.py       # Aggregates plays into per-track stats
-│   ├── tag_manager.py             # (planned) Syncs playlist-based tags to DB
+│   ├── tag_manager.py             # Syncs #hashtag playlists from Spotify into tag_mapping
 │   ├── playlist_builder.py        # (planned) Builds Spotify playlists from tag queries
 │   └── monthly_report.py          # (planned) Generates monthly listening analytics
 ├── config/                        # gitignored
@@ -189,21 +219,25 @@ Scripts are designed to run in this order:
 4. **`classify_plays.py`** — rebuild `plays` from the raw tables with quality classification
 5. **`build_track_stats.py`** — aggregate `plays` into `track_stats`
 
+`tag_manager.py` runs independently of the play-data pipeline scheduled daily. It rebuilds `tag_mapping` from the current state of all `#hashtag` playlists.
+
 ---
 
 ## Status
 
 **Complete:**
-- Extended streaming history loaded into MySQL (80,000+ rows)
+- Extended streaming history loaded into MySQL
 - Spotify API connection established, credentials modularized in `config/`
 - Recent tracks ingestion script with auto-deduplication after each ingestion run
-- Track metadata retrieval script with resume support, rate-limit handling, and token refresh
+- Track metadata retrieval script with resume support, rate-limit handling, token refresh, and a 7-artist cap to stay under MySQL's row-size limit
 - Unified `plays` table with play quality classification (full_listen / natural_end / partial / skip)
 - Per-track aggregate stats in `track_stats` (play counts, skip/completion rates, unique days, peak month, etc.)
+- Tag schema designed and seeded: 8 axes, 33 tags, populated via one-off SQL
+- `tag_manager.py` syncs `#hashtag` Spotify playlists into `tag_mapping` end-to-end
 
 **In Progress:**
 - Raspberry Pi scheduling for hourly API polling
-- Tag-based playlist management system
+- Playlist generation from tag queries (with negative-tag support)
 - Monthly analytics automation
 - Threshold tuning for skip classification based on observed data
 

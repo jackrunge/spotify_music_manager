@@ -36,6 +36,7 @@ REQUEST_DELAY      = 5.0    # seconds between each API call
 FLUSH_EVERY        = 100    # write to DB every N tracks so crashes don't lose progress
 TOKEN_LIFETIME     = 55 * 60  # refresh token after 55 min (tokens expire at 60)
 MAX_TRACKS_PER_RUN = 500    # stay under Spotify dev mode's ~600 daily request cap
+MAX_ARTISTS        = 10      # cap artist columns to avoid MySQL row size limit
 
 
 def get_engine():
@@ -51,7 +52,7 @@ def get_distinct_track_uris() -> List[str]:
     try:
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT DISTINCT spotify_track_uri AS uri FROM clean_data
+                SELECT DISTINCT spotify_track_uri AS uri FROM raw_extended_history
                     WHERE spotify_track_uri IS NOT NULL
                 UNION
                 SELECT DISTINCT spotify_track_uri AS uri FROM raw_recently_played
@@ -230,7 +231,7 @@ def main():
 
         # Flush to DB every FLUSH_EVERY tracks and on the final track
         if len(pending) >= FLUSH_EVERY or i == len(uris):
-            batch_max = max(len(a) for _, _, a, _ in pending)
+            batch_max = min(max(len(a) for _, _, a, _ in pending), MAX_ARTISTS)
             if batch_max > max_artists:
                 ensure_artist_columns(engine, batch_max, max_artists)
                 max_artists = batch_max
